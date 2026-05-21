@@ -3,18 +3,14 @@ Description: >
   Auto-scaling web tier with ALB, ASG, NAT Gateway, and multi-AZ VPC.
   Instances display their instance ID so traffic distribution is visible.
 
-# ─────────────────────────────────────────────
 # PARAMETERS
-# ─────────────────────────────────────────────
 Parameters:
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
     Description: Automatically resolves the latest Amazon Linux 2 AMI
 
-# ─────────────────────────────────────────────
 # VPC & NETWORKING
-# ─────────────────────────────────────────────
 Resources:
 
   # --- VPC ---
@@ -45,7 +41,6 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: 10.0.1.0/24
       AvailabilityZone: !Select [0, !GetAZs ""]
-      MapPublicIpOnLaunch: true
       Tags: [{Key: Name, Value: public-a}]
 
   PublicSubnetB:
@@ -54,7 +49,6 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: 10.0.2.0/24
       AvailabilityZone: !Select [1, !GetAZs ""]
-      MapPublicIpOnLaunch: true
       Tags: [{Key: Name, Value: public-b}]
 
   # --- Private Subnets (EC2 instances live here) ---
@@ -131,9 +125,7 @@ Resources:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties: {SubnetId: !Ref PrivateSubnetB, RouteTableId: !Ref PrivateRouteTable}
 
-# ─────────────────────────────────────────────
 # SECURITY GROUPS
-# ─────────────────────────────────────────────
 
   # ALB: allow HTTP from internet
   ALBSecurityGroup:
@@ -161,9 +153,7 @@ Resources:
           SourceSecurityGroupId: !Ref ALBSecurityGroup
       Tags: [{Key: Name, Value: instance-sg}]
 
-# ─────────────────────────────────────────────
 # APPLICATION LOAD BALANCER
-# ─────────────────────────────────────────────
 
   ALB:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
@@ -199,9 +189,7 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref TargetGroup
 
-# ─────────────────────────────────────────────
 # IAM ROLE (lets instances call EC2 metadata API)
-# ─────────────────────────────────────────────
 
   InstanceRole:
     Type: AWS::IAM::Role
@@ -221,9 +209,7 @@ Resources:
     Properties:
       Roles: [!Ref InstanceRole]
 
-# ─────────────────────────────────────────────
 # LAUNCH TEMPLATE
-# ─────────────────────────────────────────────
 
   LaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
@@ -274,7 +260,7 @@ Resources:
             </head>
             <body>
               <div class="card">
-                <h1>🚀 Auto Scaling Web Tier</h1>
+                <h1>Auto Scaling Web Tier</h1>
                 <p>Instance ID: <span class="id">$INSTANCE_ID</span></p>
                 <p>Private IP : <span class="id">$PRIVATE_IP</span></p>
                 <p>AZ         : <span class="id">$AZ</span></p>
@@ -283,7 +269,7 @@ Resources:
             </html>
             EOF
 
-            # CPU stress endpoint – hitting /stress.sh triggers load for demo purposes
+            # CPU stress endpoint - hitting /stress.sh triggers load for demo purposes
             cat > /var/www/cgi-bin/stress.sh <<'STRESS'
             #!/bin/bash
             echo "Content-Type: text/plain"
@@ -300,9 +286,7 @@ Resources:
             sed -i 's|Options None|Options +ExecCGI|' /etc/httpd/conf/httpd.conf
             systemctl restart httpd
 
-# ─────────────────────────────────────────────
 # AUTO SCALING GROUP
-# ─────────────────────────────────────────────
 
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
@@ -338,9 +322,7 @@ Resources:
         TargetValue: 30
         # Scale-in is enabled by default; set DisableScaleIn: true to disable it
 
-# ─────────────────────────────────────────────
 # OUTPUTS
-# ─────────────────────────────────────────────
 
 Outputs:
   ALBDNSName:
