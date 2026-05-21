@@ -20,13 +20,11 @@ Resources:
       CidrBlock: 10.0.0.0/16
       EnableDnsSupport: true
       EnableDnsHostnames: true
-      Tags: [{Key: Name, Value: autoscale-vpc}]
 
   # --- Internet Gateway ---
   IGW:
     Type: AWS::EC2::InternetGateway
     Properties:
-      Tags: [{Key: Name, Value: autoscale-igw}]
 
   IGWAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -41,7 +39,6 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: 10.0.1.0/24
       AvailabilityZone: !Select [0, !GetAZs ""]
-      Tags: [{Key: Name, Value: public-a}]
 
   PublicSubnetB:
     Type: AWS::EC2::Subnet
@@ -49,7 +46,6 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: 10.0.2.0/24
       AvailabilityZone: !Select [1, !GetAZs ""]
-      Tags: [{Key: Name, Value: public-b}]
 
   # --- Private Subnets (EC2 instances live here) ---
   PrivateSubnetA:
@@ -58,7 +54,6 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: 10.0.3.0/24
       AvailabilityZone: !Select [0, !GetAZs ""]
-      Tags: [{Key: Name, Value: private-a}]
 
   PrivateSubnetB:
     Type: AWS::EC2::Subnet
@@ -66,7 +61,6 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: 10.0.4.0/24
       AvailabilityZone: !Select [1, !GetAZs ""]
-      Tags: [{Key: Name, Value: private-b}]
 
   # --- NAT Gateway (regional; one AZ is enough for demo) ---
   NatEIP:
@@ -79,14 +73,12 @@ Resources:
     Properties:
       SubnetId: !Ref PublicSubnetA
       AllocationId: !GetAtt NatEIP.AllocationId
-      Tags: [{Key: Name, Value: autoscale-nat}]
 
   # --- Route Tables ---
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref VPC
-      Tags: [{Key: Name, Value: public-rt}]
 
   PublicRoute:
     Type: AWS::EC2::Route
@@ -138,7 +130,6 @@ Resources:
           FromPort: 80
           ToPort: 80
           CidrIp: 0.0.0.0/0
-      Tags: [{Key: Name, Value: alb-sg}]
 
   # EC2: allow HTTP only from ALB security group (no direct internet access)
   InstanceSecurityGroup:
@@ -151,7 +142,6 @@ Resources:
           FromPort: 80
           ToPort: 80
           SourceSecurityGroupId: !Ref ALBSecurityGroup
-      Tags: [{Key: Name, Value: instance-sg}]
 
 # APPLICATION LOAD BALANCER
 
@@ -202,7 +192,6 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore  # optional: SSM access for debugging
-      Tags: [{Key: Name, Value: instance-role}]
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
