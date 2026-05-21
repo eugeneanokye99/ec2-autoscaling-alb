@@ -24,7 +24,6 @@ Resources:
   # --- Internet Gateway ---
   IGW:
     Type: AWS::EC2::InternetGateway
-    Properties:
 
   IGWAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
