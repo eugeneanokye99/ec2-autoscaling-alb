@@ -1,0 +1,352 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Auto-scaling web tier with ALB, ASG, NAT Gateway, and multi-AZ VPC.
+  Instances display their instance ID so traffic distribution is visible.
+
+# ─────────────────────────────────────────────
+# PARAMETERS
+# ─────────────────────────────────────────────
+Parameters:
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+    Description: Automatically resolves the latest Amazon Linux 2 AMI
+
+# ─────────────────────────────────────────────
+# VPC & NETWORKING
+# ─────────────────────────────────────────────
+Resources:
+
+  # --- VPC ---
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{Key: Name, Value: autoscale-vpc}]
+
+  # --- Internet Gateway ---
+  IGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{Key: Name, Value: autoscale-igw}]
+
+  IGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref IGW
+
+  # --- Public Subnets (ALB lives here) ---
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: public-a}]
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: public-b}]
+
+  # --- Private Subnets (EC2 instances live here) ---
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags: [{Key: Name, Value: private-a}]
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.4.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags: [{Key: Name, Value: private-b}]
+
+  # --- NAT Gateway (regional; one AZ is enough for demo) ---
+  NatEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      AllocationId: !GetAtt NatEIP.AllocationId
+      Tags: [{Key: Name, Value: autoscale-nat}]
+
+  # --- Route Tables ---
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags: [{Key: Name, Value: public-rt}]
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IGWAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IGW
+
+  PublicSubnetAAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PublicSubnetA, RouteTableId: !Ref PublicRouteTable}
+
+  PublicSubnetBAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PublicSubnetB, RouteTableId: !Ref PublicRouteTable}
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags: [{Key: Name, Value: private-rt}]
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnetAAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PrivateSubnetA, RouteTableId: !Ref PrivateRouteTable}
+
+  PrivateSubnetBAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PrivateSubnetB, RouteTableId: !Ref PrivateRouteTable}
+
+# ─────────────────────────────────────────────
+# SECURITY GROUPS
+# ─────────────────────────────────────────────
+
+  # ALB: allow HTTP from internet
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP from internet to ALB
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags: [{Key: Name, Value: alb-sg}]
+
+  # EC2: allow HTTP only from ALB security group (no direct internet access)
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP only from ALB
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Tags: [{Key: Name, Value: instance-sg}]
+
+# ─────────────────────────────────────────────
+# APPLICATION LOAD BALANCER
+# ─────────────────────────────────────────────
+
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: autoscale-alb
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: autoscale-tg
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      TargetType: instance
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 2
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+# ─────────────────────────────────────────────
+# IAM ROLE (lets instances call EC2 metadata API)
+# ─────────────────────────────────────────────
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore  # optional: SSM access for debugging
+      Tags: [{Key: Name, Value: instance-role}]
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+# ─────────────────────────────────────────────
+# LAUNCH TEMPLATE
+# ─────────────────────────────────────────────
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: autoscale-lt
+      LaunchTemplateData:
+        ImageId: !Ref LatestAmiId
+        InstanceType: t3.micro
+        IamInstanceProfile:
+          Arn: !GetAtt InstanceProfile.Arn
+        SecurityGroupIds:
+          - !Ref InstanceSecurityGroup
+        # No KeyName = no SSH access (as required)
+        UserData:
+          Fn::Base64: |
+            #!/bin/bash
+            yum update -y
+            yum install -y httpd stress
+
+            # Start Apache
+            systemctl enable httpd
+            systemctl start httpd
+
+            # Retrieve instance metadata
+            TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+              -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+            INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+              http://169.254.169.254/latest/meta-data/instance-id)
+            PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+              http://169.254.169.254/latest/meta-data/local-ipv4)
+            AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+              http://169.254.169.254/latest/meta-data/placement/availability-zone)
+
+            # Create a simple HTML page showing instance details
+            cat > /var/www/html/index.html <<EOF
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <title>Auto Scaling Demo</title>
+              <style>
+                body { font-family: Arial, sans-serif; text-align: center; margin-top: 80px; background: #f4f4f4; }
+                .card { display: inline-block; padding: 40px; background: white;
+                        border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+                h1 { color: #e67e22; }
+                p  { font-size: 1.2em; }
+                .id { font-weight: bold; color: #2c3e50; font-size: 1.4em; }
+              </style>
+            </head>
+            <body>
+              <div class="card">
+                <h1>🚀 Auto Scaling Web Tier</h1>
+                <p>Instance ID: <span class="id">$INSTANCE_ID</span></p>
+                <p>Private IP : <span class="id">$PRIVATE_IP</span></p>
+                <p>AZ         : <span class="id">$AZ</span></p>
+              </div>
+            </body>
+            </html>
+            EOF
+
+            # CPU stress endpoint – hitting /stress.sh triggers load for demo purposes
+            cat > /var/www/cgi-bin/stress.sh <<'STRESS'
+            #!/bin/bash
+            echo "Content-Type: text/plain"
+            echo ""
+            echo "Stressing CPU for 120 seconds..."
+            nohup stress --cpu 2 --timeout 120 &>/dev/null &
+            echo "Done. Watch CloudWatch for CPU spike."
+            STRESS
+            chmod +x /var/www/cgi-bin/stress.sh
+
+            # Enable CGI so the stress endpoint works
+            sed -i 's|#AddHandler cgi-script .cgi|AddHandler cgi-script .cgi .sh|' \
+              /etc/httpd/conf/httpd.conf
+            sed -i 's|Options None|Options +ExecCGI|' /etc/httpd/conf/httpd.conf
+            systemctl restart httpd
+
+# ─────────────────────────────────────────────
+# AUTO SCALING GROUP
+# ─────────────────────────────────────────────
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: autoscale-asg
+      MinSize: "1"
+      DesiredCapacity: "1"
+      MaxSize: "4"
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      TargetGroupARNs:
+        - !Ref TargetGroup
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 120
+      Tags:
+        - Key: Name
+          Value: autoscale-instance
+          PropagateAtLaunch: true
+
+  # Scale-out policy: add 1 instance when CPU > 30 %
+  ScaleOutPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: 30
+        # Scale-in is enabled by default; set DisableScaleIn: true to disable it
+
+# ─────────────────────────────────────────────
+# OUTPUTS
+# ─────────────────────────────────────────────
+
+Outputs:
+  ALBDNSName:
+    Description: Public URL of the Application Load Balancer
+    Value: !Sub "http://${ALB.DNSName}"
+
+  StressEndpoint:
+    Description: Hit this URL to trigger a CPU spike and watch scale-out
+    Value: !Sub "http://${ALB.DNSName}/cgi-bin/stress.sh"

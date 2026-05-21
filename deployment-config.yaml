@@ -1,0 +1,16 @@
+# CloudFormation GitSync Deployment Configuration
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/git-sync-concepts-terms.html
+
+template-file-path: ./ec2-autoscaling-alb.yaml
+
+stack-name: autoscale-demo
+
+region: us-east-1
+
+parameters:
+  LatestAmiId: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+
+tags:
+  Project: autoscale-demo
+  Environment: demo
+  ManagedBy: CloudFormation-GitSync
