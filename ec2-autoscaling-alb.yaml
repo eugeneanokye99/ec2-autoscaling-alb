@@ -232,7 +232,7 @@ Resources:
               http://169.254.169.254/latest/meta-data/placement/availability-zone)
 
             # Create a simple HTML page showing instance details
-            cat > /var/www/html/index.html <<EOF
+            cat > /var/www/html/index.html <<HTMLEOF
             <!DOCTYPE html>
             <html>
             <head>
@@ -244,6 +244,11 @@ Resources:
                 h1 { color: #e67e22; }
                 p  { font-size: 1.2em; }
                 .id { font-weight: bold; color: #2c3e50; font-size: 1.4em; }
+                button { margin-top: 20px; padding: 12px 30px; font-size: 1em;
+                        background: #e67e22; color: white; border: none;
+                        border-radius: 6px; cursor: pointer; }
+                button:hover { background: #cf6d17; }
+                #result { margin-top: 15px; font-size: 0.95em; color: #555; }
               </style>
             </head>
             <body>
@@ -252,10 +257,28 @@ Resources:
                 <p>Instance ID: <span class="id">$INSTANCE_ID</span></p>
                 <p>Private IP : <span class="id">$PRIVATE_IP</span></p>
                 <p>AZ         : <span class="id">$AZ</span></p>
+                <button onclick="stress()">Stress CPU</button>
+                <div id="result"></div>
               </div>
+              <script>
+                function stress() {
+                  document.getElementById('result').innerText = 'Stressing...';
+                  fetch('/cgi-bin/stress.sh')
+                    .then(r => r.text())
+                    .then(t => {
+                      document.getElementById('result').innerText = t;
+                      // Reload after 2s so the next click hits a potentially different instance
+                      setTimeout(() => location.reload(), 2000);
+                    })
+                    .catch(() => {
+                      document.getElementById('result').innerText = 'Done. Watch for new instances.';
+                      setTimeout(() => location.reload(), 2000);
+                    });
+                }
+              </script>
             </body>
             </html>
-            EOF
+            HTMLEOF
 
             # CPU stress endpoint - hitting /stress.sh triggers load for demo purposes
             cat > /var/www/cgi-bin/stress.sh <<'STRESS'
@@ -274,8 +297,8 @@ Resources:
             sed -i 's|Options None|Options +ExecCGI|' /etc/httpd/conf/httpd.conf
             systemctl restart httpd
 
-# AUTO SCALING GROUP
 
+# AUTO SCALING GROUP
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
