@@ -61,7 +61,7 @@ Resources:
       CidrBlock: 10.0.4.0/24
       AvailabilityZone: !Select [1, !GetAZs ""]
 
-  # --- NAT Gateway (regional; one AZ is enough for demo) ---
+  # --- NAT Gateway  ---
   NatEIP:
     Type: AWS::EC2::EIP
     Properties:
@@ -214,8 +214,18 @@ Resources:
         UserData:
           Fn::Base64: |
             #!/bin/bash
+
+            # Update packages
             yum update -y
-            yum install -y httpd stress
+
+            # Install Apache
+            yum install -y httpd
+
+            # Install EPEL + stress tool
+            amazon-linux-extras install epel -y
+            yum install -y stress
+
+
 
             # Start Apache
             systemctl enable httpd
@@ -229,7 +239,7 @@ Resources:
             PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
               http://169.254.169.254/latest/meta-data/local-ipv4)
             AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
-              http://169.254.169.254/latest/meta-data/placement/availability-zone)
+              http://169.254.169.2 54/latest/meta-data/placement/availability-zone)
 
             # Create a simple HTML page showing instance details
             cat > /var/www/html/index.html <<HTMLEOF
@@ -285,8 +295,8 @@ Resources:
             #!/bin/bash
             echo "Content-Type: text/plain"
             echo ""
-            echo "Stressing CPU for 120 seconds..."
-            nohup stress --cpu 2 --timeout 120 &>/dev/null &
+            echo "Stressing CPU for 60 seconds..."
+            nohup stress --cpu 4 --timeout 60 &>/dev/null &
             echo "Done. Watch CloudWatch for CPU spike."
             STRESS
             chmod +x /var/www/cgi-bin/stress.sh
