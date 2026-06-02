@@ -349,7 +349,3 @@ Outputs:
   ALBDNSName:
     Description: Public URL of the Application Load Balancer
     Value: !Sub "http://${ALB.DNSName}"
-
-  StressEndpoint:
-    Description: Hit this URL to trigger a CPU spike and watch scale-out
-    Value: !Sub "http://${ALB.DNSName}/cgi-bin/stress.sh"
