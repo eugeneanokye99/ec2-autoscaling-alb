@@ -76,16 +76,21 @@ Resources:
 # =========================
 # NAT Gateway (Regional)
 # =========================
+  NatEIP:
+      Type: AWS::EC2::EIP
+      Properties:
+        Domain: vpc
+
   NAT:
     Type: AWS::EC2::NatGateway
     DependsOn: IGWAttachment
     Properties:
       ConnectivityType: public
-      AvailabilityMode: regional
-      VpcId: !Ref VPC
+      SubnetId: !Ref PublicSubnetA
+      AllocationId: !GetAtt NatEIP.AllocationId
       Tags:
         - Key: Name
-          Value: Demo-Regional-NAT
+          Value: autoscaling-demo-nat
 
   # =========================
   # ROUTING
