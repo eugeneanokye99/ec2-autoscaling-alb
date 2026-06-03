@@ -257,7 +257,7 @@ Resources:
       LaunchTemplateName: autoscaling-demo-lt
       LaunchTemplateData:
         # AL2023 - current recommended Amazon Linux, uses dnf
-        ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+        ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2}}'
         InstanceType: t3.micro
         IamInstanceProfile:
           Arn: !GetAtt InstanceProfile.Arn
