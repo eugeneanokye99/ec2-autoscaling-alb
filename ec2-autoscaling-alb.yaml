@@ -379,7 +379,7 @@ Resources:
     DependsOn: Listener
     Properties:
       MinSize: "1"
-      DesiredCapacity: "2"
+      DesiredCapacity: "1"
       MaxSize: "4"
       VPCZoneIdentifier:
         - !Ref PrivateSubnetA
@@ -399,10 +399,6 @@ Resources:
 
   # =========================
   # SCALING POLICY
-  # Target tracking automatically handles both scale-out (CPU > 30%) and
-  # scale-in (CPU drops below threshold) without a separate scale-in policy.
-  # EstimatedInstanceWarmup gives new instances 60s to stabilise before
-  # their metrics influence the scaling decision.
   # =========================
   ScaleOutPolicy:
     Type: AWS::AutoScaling::ScalingPolicy
