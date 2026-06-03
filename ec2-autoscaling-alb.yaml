@@ -76,21 +76,16 @@ Resources:
 # =========================
 # NAT Gateway (Regional)
 # =========================
-  NatEIP:
-      Type: AWS::EC2::EIP
-      Properties:
-        Domain: vpc
-
   NAT:
     Type: AWS::EC2::NatGateway
     DependsOn: IGWAttachment
     Properties:
       ConnectivityType: public
-      SubnetId: !Ref PublicSubnetA
-      AllocationId: !GetAtt NatEIP.AllocationId
+      AvailabilityMode: regional
+      VpcId: !Ref VPC
       Tags:
         - Key: Name
-          Value: autoscaling-demo-nat
+          Value: Demo-Regional-NAT
 
   # =========================
   # ROUTING
@@ -272,129 +267,194 @@ Resources:
         UserData:
           Fn::Base64: |
             #!/bin/bash -xe
-  
+
             # Update packages
             yum update -y
-  
+
             # Install Apache
             yum install -y httpd
-  
+
             # Install EPEL + stress tool
             amazon-linux-extras install epel -y
             yum install -y stress
-  
-
 
             # Start Apache
             systemctl enable httpd
             systemctl start httpd
-  
+
             # -----------------------------
             # IMDSv2 TOKEN
             # -----------------------------
             TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" \
             -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-  
+
             # Fetch metadata
             AZ=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" \
             http://169.254.169.254/latest/meta-data/placement/availability-zone)
-  
+
             INSTANCEID=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" \
             http://169.254.169.254/latest/meta-data/instance-id)
-  
+
             PRIVATEIP=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" \
             http://169.254.169.254/latest/meta-data/local-ipv4)
-  
+
             # -----------------------------
             # WEB PAGE
             # -----------------------------
-            cat > /var/www/html/index.html << EOF
+            cat > /var/www/html/index.html << 'HTML'
             <!DOCTYPE html>
             <html>
             <head>
                 <title>Auto Scaling Demo</title>
+                <meta http-equiv="refresh" content="5">
                 <style>
+                    * { box-sizing: border-box; margin: 0; padding: 0; }
                     body {
-                        font-family: Arial;
-                        margin: 40px;
+                        font-family: Arial, sans-serif;
                         background: #f4f4f4;
+                        min-height: 100vh;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        padding: 20px;
                     }
                     .card {
                         background: white;
-                        padding: 30px;
-                        border-radius: 10px;
-                        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                        padding: 36px;
+                        border-radius: 12px;
+                        box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+                        width: 100%;
+                        max-width: 480px;
                     }
-                    h1 {
+                    .header {
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                        margin-bottom: 24px;
+                    }
+                    h1 { font-size: 20px; color: #232f3e; }
+                    .refresh-badge {
+                        font-size: 11px;
+                        background: #e8f4e8;
+                        color: #2d7d2d;
+                        padding: 3px 8px;
+                        border-radius: 12px;
+                    }
+                    .info-table {
+                        width: 100%;
+                        border-collapse: collapse;
+                        margin-bottom: 24px;
+                    }
+                    .info-table td {
+                        padding: 12px 0;
+                        border-bottom: 1px solid #f0f0f0;
+                        font-size: 14px;
+                    }
+                    .info-table td:first-child { color: #666; width: 40%; }
+                    .info-table td:last-child {
+                        font-weight: bold;
+                        font-family: monospace;
                         color: #232f3e;
                     }
-                    .info {
-                        margin: 10px 0;
-                        font-size: 18px;
+                    .info-table tr:last-child td { border-bottom: none; }
+                    .az-badge {
+                        background: #fff3e0;
+                        color: #e65100;
+                        padding: 2px 8px;
+                        border-radius: 4px;
+                        font-size: 12px;
+                        font-weight: bold;
                     }
                     .btn {
+                        display: block;
+                        width: 100%;
                         background: #ff9900;
                         color: white;
-                        padding: 12px 20px;
+                        padding: 13px 20px;
                         border: none;
-                        border-radius: 5px;
+                        border-radius: 8px;
                         cursor: pointer;
-                        font-size: 16px;
+                        font-size: 15px;
+                        font-weight: bold;
+                        margin-bottom: 16px;
+                    }
+                    .btn:hover { background: #e68900; }
+                    #status {
+                        font-size: 13px;
+                        color: #2d7d2d;
+                        text-align: center;
+                        height: 18px;
+                        margin-bottom: 12px;
+                    }
+                    .note {
+                        font-size: 12px;
+                        color: #999;
+                        text-align: center;
+                        line-height: 1.5;
                     }
                 </style>
             </head>
             <body>
                 <div class="card">
-                    <h1>🚀 Auto Scaling Demo</h1>
-  
-                    <div class="info">
-                        <strong>Instance ID:</strong> $INSTANCEID
+                    <div class="header">
+                        <h1>🚀 Auto Scaling Demo</h1>
+                        <span class="refresh-badge">⟳ 5s</span>
                     </div>
-  
-                    <div class="info">
-                        <strong>Availability Zone:</strong> $AZ
-                    </div>
-  
-                    <div class="info">
-                        <strong>Private IP:</strong> $PRIVATEIP
-                    </div>
-  
-                    <br>
-  
-                    <button class="btn" onclick="fetch('/burn')">
-                        Start CPU Stress
-                    </button>
-  
-                    <p>
-                        Refresh page to observe load balancing across instances.
-                    </p>
+                    <table class="info-table">
+                        <tr>
+                            <td>Instance ID</td>
+                            <td>INSTANCEID_PLACEHOLDER</td>
+                        </tr>
+                        <tr>
+                            <td>Availability Zone</td>
+                            <td><span class="az-badge">AZ_PLACEHOLDER</span></td>
+                        </tr>
+                        <tr>
+                            <td>Private IP</td>
+                            <td>PRIVATEIP_PLACEHOLDER</td>
+                        </tr>
+                    </table>
+                    <button class="btn" onclick="burnCpu()">🔥 Start CPU Stress</button>
+                    <div id="status"></div>
+                    <p class="note">Page auto-refreshes every 5 seconds.<br>Reload to observe load balancing across instances.</p>
                 </div>
+                <script>
+                    function burnCpu() {
+                        document.getElementById('status').textContent = 'Stress starting...';
+                        fetch('/burn')
+                            .then(r => r.text())
+                            .then(() => { document.getElementById('status').textContent = 'CPU stress running — watch ASG in AWS console!'; })
+                            .catch(() => { document.getElementById('status').textContent = 'Error triggering stress'; });
+                    }
+                </script>
             </body>
             </html>
-            EOF
-  
+            HTML
+
+            # Substitute placeholders with real metadata values
+            sed -i "s|INSTANCEID_PLACEHOLDER|$INSTANCEID|g" /var/www/html/index.html
+            sed -i "s|AZ_PLACEHOLDER|$AZ|g"                 /var/www/html/index.html
+            sed -i "s|PRIVATEIP_PLACEHOLDER|$PRIVATEIP|g"   /var/www/html/index.html
+
             # -----------------------------
             # CPU STRESS CGI SCRIPT
             # -----------------------------
             mkdir -p /var/www/cgi-bin
-  
+
             cat > /var/www/cgi-bin/burn.sh << 'EOF'
             #!/bin/bash
             echo "Content-Type: text/plain"
             echo ""
-  
-            # Burn CPU for 60 seconds
             stress --cpu 4 --timeout 60s &
-  
             echo "CPU stress started"
             EOF
-  
+
             chmod +x /var/www/cgi-bin/burn.sh
-  
+
             # Enable CGI endpoint
             cat > /etc/httpd/conf.d/burn.conf << 'EOF'
             ScriptAlias /burn /var/www/cgi-bin/burn.sh
-  
+
             <Directory "/var/www/cgi-bin">
                 AllowOverride None
                 Options +ExecCGI
@@ -402,12 +462,11 @@ Resources:
                 Require all granted
             </Directory>
             EOF
-  
+
             # Restart Apache
             systemctl restart httpd
-  
-            echo "UserData setup complete"
 
+            echo "UserData setup complete"
 
   # =========================
   # AUTO SCALING GROUP
