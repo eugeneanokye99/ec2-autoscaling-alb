@@ -4,14 +4,6 @@ Description: >
   Demonstrates CPU-based scaling and traffic distribution across instances.
 
 # =========================
-# PARAMETERS
-# =========================
-Parameters:
-  LatestAmiId:
-    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
-    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
-
-# =========================
 # NETWORKING
 # =========================
 Resources:
@@ -213,6 +205,11 @@ Resources:
       Protocol: HTTP
       TargetType: instance
       HealthCheckPath: /
+      # Faster health check convergence so instances join the target group
+      # sooner during demos and scale-out events
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
       Tags:
         - Key: Name
           Value: autoscaling-demo-tg
@@ -253,35 +250,54 @@ Resources:
 
   # =========================
   # LAUNCH TEMPLATE
+  # Changes from original:
+  #   - AL2023 AMI (dnf instead of yum, actively maintained)
+  #   - IMDSv2 enforced (HttpTokens: required) with token-based metadata calls
+  #   - set -e so the script fails fast on any error
+  #   - HTML written with literal placeholders then substituted via sed,
+  #     avoiding heredoc variable expansion timing issues
+  #   - stress-ng CGI also uses IMDSv2 token
   # =========================
   LaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
       LaunchTemplateName: autoscaling-demo-lt
       LaunchTemplateData:
-        ImageId: !Ref LatestAmiId
+        # AL2023 - current recommended Amazon Linux, uses dnf
+        ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
         InstanceType: t3.micro
         IamInstanceProfile:
           Arn: !GetAtt InstanceProfile.Arn
         SecurityGroupIds:
           - !Ref InstanceSecurityGroup
-        # UserData installs Apache, deploys the demo app, and configures the CGI stress endpoint.
-        # The page displays instance-specific metadata (ID, AZ, IP, launch time) and
-        # auto-refreshes every 5 seconds to demonstrate round-robin load balancing.
+        # Enforce IMDSv2 - required for token-based metadata calls below
+        MetadataOptions:
+          HttpTokens: required
+          HttpEndpoint: enabled
         UserData:
           Fn::Base64: |
             #!/bin/bash
-            yum update -y
-            yum install -y httpd stress-ng
+            set -e
+
+            dnf install -y httpd stress-ng
             systemctl enable httpd
             systemctl start httpd
 
-            INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
-            AZ=$(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone)
-            LOCAL_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
+            # IMDSv2 - fetch a session token first, then use it for all metadata calls
+            TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+              -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+            INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+              http://169.254.169.254/latest/meta-data/instance-id)
+            AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+              http://169.254.169.254/latest/meta-data/placement/availability-zone)
+            LOCAL_IP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+              http://169.254.169.254/latest/meta-data/local-ipv4)
             LAUNCH_TIME=$(date '+%Y-%m-%d %H:%M:%S UTC')
 
-            cat > /var/www/html/index.html <<EOF
+            # Write HTML with literal placeholders, then substitute via sed.
+            # This is more reliable than heredoc variable expansion which runs
+            # the curl calls at write time before metadata is guaranteed available.
+            cat > /var/www/html/index.html <<'HTML'
             <!DOCTYPE html>
             <html>
             <head>
@@ -307,10 +323,10 @@ Resources:
                 <div class="badge">Auto Scaling Demo</div>
                 <h1>&#9881; Instance Info</h1>
                 <table>
-                  <tr><td>Instance ID</td><td>$INSTANCE_ID</td></tr>
-                  <tr><td>Availability Zone</td><td>$AZ</td></tr>
-                  <tr><td>Private IP</td><td>$LOCAL_IP</td></tr>
-                  <tr><td>Instance launched</td><td>$LAUNCH_TIME</td></tr>
+                  <tr><td>Instance ID</td><td>INSTANCE_ID_PLACEHOLDER</td></tr>
+                  <tr><td>Availability Zone</td><td>AZ_PLACEHOLDER</td></tr>
+                  <tr><td>Private IP</td><td>LOCAL_IP_PLACEHOLDER</td></tr>
+                  <tr><td>Instance launched</td><td>LAUNCH_TIME_PLACEHOLDER</td></tr>
                 </table>
                 <button class="stress-btn" onclick="stressCpu()">&#128165; Stress CPU (5 min)</button>
                 <div id="status"></div>
@@ -321,20 +337,31 @@ Resources:
                   document.getElementById('status').textContent = 'Starting CPU stress...';
                   fetch('/cgi-bin/stress.sh')
                     .then(r => r.text())
-                    .then(t => { document.getElementById('status').textContent = 'Stress running on $INSTANCE_ID - watch ASG in AWS console!'; })
+                    .then(t => { document.getElementById('status').textContent = 'Stress running - watch ASG in AWS console!'; })
                     .catch(() => { document.getElementById('status').textContent = 'Error triggering stress'; });
                 }
               </script>
             </body>
             </html>
-            EOF
+            HTML
 
+            # Substitute placeholders with real metadata values
+            sed -i "s|INSTANCE_ID_PLACEHOLDER|$INSTANCE_ID|g"   /var/www/html/index.html
+            sed -i "s|AZ_PLACEHOLDER|$AZ|g"                     /var/www/html/index.html
+            sed -i "s|LOCAL_IP_PLACEHOLDER|$LOCAL_IP|g"         /var/www/html/index.html
+            sed -i "s|LAUNCH_TIME_PLACEHOLDER|$LAUNCH_TIME|g"   /var/www/html/index.html
+
+            # CGI stress script - also uses IMDSv2 for instance ID in response
             cat > /var/www/cgi-bin/stress.sh <<'EOF'
             #!/bin/bash
             echo "Content-Type: text/plain"
             echo ""
+            TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+              -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+            INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+              http://169.254.169.254/latest/meta-data/instance-id)
             nohup stress-ng --cpu 8 --timeout 300s &>/dev/null &
-            echo "Stress running on $(curl -s http://169.254.169.254/latest/meta-data/instance-id)"
+            echo "Stress running on $INSTANCE_ID"
             EOF
 
             chmod +x /var/www/cgi-bin/stress.sh
@@ -359,7 +386,7 @@ Resources:
     DependsOn: Listener
     Properties:
       MinSize: "1"
-      DesiredCapacity: "1"
+      DesiredCapacity: "2"
       MaxSize: "4"
       VPCZoneIdentifier:
         - !Ref PrivateSubnetA
