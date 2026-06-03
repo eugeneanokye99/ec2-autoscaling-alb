@@ -359,7 +359,7 @@ Resources:
     DependsOn: Listener
     Properties:
       MinSize: "1"
-      DesiredCapacity: "2"
+      DesiredCapacity: "1"
       MaxSize: "4"
       VPCZoneIdentifier:
         - !Ref PrivateSubnetA
