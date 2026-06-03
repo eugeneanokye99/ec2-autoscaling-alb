@@ -5,10 +5,7 @@ template-file-path: ./ec2-autoscaling-alb.yaml
 
 stack-name: autoscale-demo
 
-region: us-central-1
-
-parameters:
-  LatestAmiId: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+region: eu-central-1
 
 tags:
   Project: autoscale-demo

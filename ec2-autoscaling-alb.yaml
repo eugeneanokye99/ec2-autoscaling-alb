@@ -250,13 +250,6 @@ Resources:
 
   # =========================
   # LAUNCH TEMPLATE
-  # Changes from original:
-  #   - AL2023 AMI (dnf instead of yum, actively maintained)
-  #   - IMDSv2 enforced (HttpTokens: required) with token-based metadata calls
-  #   - set -e so the script fails fast on any error
-  #   - HTML written with literal placeholders then substituted via sed,
-  #     avoiding heredoc variable expansion timing issues
-  #   - stress-ng CGI also uses IMDSv2 token
   # =========================
   LaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
