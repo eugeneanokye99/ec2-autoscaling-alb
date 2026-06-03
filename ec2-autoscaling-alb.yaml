@@ -22,9 +22,16 @@ Resources:
       CidrBlock: 10.0.0.0/16
       EnableDnsSupport: true
       EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: autoscaling-demo-vpc
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: autoscaling-demo-igw
 
   IGWAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -39,6 +46,9 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: 10.0.1.0/24
       AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: autoscaling-demo-public-a
 
   PublicSubnetB:
     Type: AWS::EC2::Subnet
@@ -46,6 +56,9 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: 10.0.2.0/24
       AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: autoscaling-demo-public-b
 
   # Private Subnets (EC2)
   PrivateSubnetA:
@@ -54,6 +67,9 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: 10.0.3.0/24
       AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: autoscaling-demo-private-a
 
   PrivateSubnetB:
     Type: AWS::EC2::Subnet
@@ -61,6 +77,9 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: 10.0.4.0/24
       AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: autoscaling-demo-private-b
 
   # =========================
   # NAT GATEWAY (REGIONAL)
@@ -75,6 +94,9 @@ Resources:
     Properties:
       SubnetId: !Ref PublicSubnetA
       AllocationId: !GetAtt NatEIP.AllocationId
+      Tags:
+        - Key: Name
+          Value: autoscaling-demo-nat
 
   # =========================
   # ROUTING
@@ -83,6 +105,9 @@ Resources:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: autoscaling-demo-public-rt
 
   PublicRoute:
     Type: AWS::EC2::Route
@@ -108,6 +133,9 @@ Resources:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: autoscaling-demo-private-rt
 
   PrivateRoute:
     Type: AWS::EC2::Route
@@ -136,23 +164,29 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       VpcId: !Ref VPC
-      GroupDescription: ALB SG
+      GroupDescription: ALB SG - allows inbound HTTP from internet
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
           CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: autoscaling-demo-alb-sg
 
   InstanceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       VpcId: !Ref VPC
-      GroupDescription: EC2 SG (only ALB access)
+      GroupDescription: EC2 SG - allows inbound HTTP from ALB only
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
           SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: autoscaling-demo-ec2-sg
 
   # =========================
   # LOAD BALANCER
@@ -167,6 +201,9 @@ Resources:
         - !Ref PublicSubnetB
       SecurityGroups:
         - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: autoscaling-demo-alb
 
   TargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
@@ -176,6 +213,9 @@ Resources:
       Protocol: HTTP
       TargetType: instance
       HealthCheckPath: /
+      Tags:
+        - Key: Name
+          Value: autoscaling-demo-tg
 
   Listener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -202,6 +242,9 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: autoscaling-demo-instance-role
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -214,6 +257,7 @@ Resources:
   LaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
+      LaunchTemplateName: autoscaling-demo-lt
       LaunchTemplateData:
         ImageId: !Ref LatestAmiId
         InstanceType: t3.micro
@@ -221,6 +265,9 @@ Resources:
           Arn: !GetAtt InstanceProfile.Arn
         SecurityGroupIds:
           - !Ref InstanceSecurityGroup
+        # UserData installs Apache, deploys the demo app, and configures the CGI stress endpoint.
+        # The page displays instance-specific metadata (ID, AZ, IP, launch time) and
+        # auto-refreshes every 5 seconds to demonstrate round-robin load balancing.
         UserData:
           Fn::Base64: |
             #!/bin/bash
@@ -229,14 +276,55 @@ Resources:
             systemctl enable httpd
             systemctl start httpd
 
-            mkdir -p /var/www/cgi-bin
+            INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+            AZ=$(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone)
+            LOCAL_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
+            LAUNCH_TIME=$(date '+%Y-%m-%d %H:%M:%S UTC')
 
             cat > /var/www/html/index.html <<EOF
+            <!DOCTYPE html>
             <html>
-            <body style="text-align:center;font-family:Arial">
-            <h1>Auto Scaling Demo</h1>
-            <p>Instance: $(curl -s http://169.254.169.254/latest/meta-data/instance-id)</p>
-            <button onclick="fetch('/cgi-bin/stress.sh')">Stress CPU</button>
+            <head>
+              <title>Auto Scaling Demo</title>
+              <meta http-equiv="refresh" content="5">
+              <style>
+                body { font-family: Arial, sans-serif; max-width: 600px; margin: 60px auto; text-align: center; background: #f4f4f4; }
+                .card { background: white; border-radius: 10px; padding: 30px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+                h1 { color: #232f3e; }
+                .badge { display: inline-block; background: #ff9900; color: white; padding: 4px 12px; border-radius: 20px; font-size: 13px; margin-bottom: 20px; }
+                table { width: 100%; border-collapse: collapse; margin: 20px 0; text-align: left; }
+                td { padding: 10px 14px; border-bottom: 1px solid #eee; }
+                td:first-child { color: #666; font-size: 13px; width: 40%; }
+                td:last-child { font-weight: bold; font-family: monospace; font-size: 14px; }
+                .stress-btn { background: #d9534f; color: white; border: none; padding: 12px 28px; border-radius: 6px; font-size: 15px; cursor: pointer; margin-top: 10px; }
+                .stress-btn:hover { background: #c9302c; }
+                .note { font-size: 12px; color: #999; margin-top: 16px; }
+                #status { margin-top: 12px; font-size: 13px; color: #28a745; height: 20px; }
+              </style>
+            </head>
+            <body>
+              <div class="card">
+                <div class="badge">Auto Scaling Demo</div>
+                <h1>&#9881; Instance Info</h1>
+                <table>
+                  <tr><td>Instance ID</td><td>$INSTANCE_ID</td></tr>
+                  <tr><td>Availability Zone</td><td>$AZ</td></tr>
+                  <tr><td>Private IP</td><td>$LOCAL_IP</td></tr>
+                  <tr><td>Instance launched</td><td>$LAUNCH_TIME</td></tr>
+                </table>
+                <button class="stress-btn" onclick="stressCpu()">&#128165; Stress CPU (5 min)</button>
+                <div id="status"></div>
+                <p class="note">Page auto-refreshes every 5 seconds. Each refresh may hit a different instance.<br>Reload repeatedly to observe load balancing across instances.</p>
+              </div>
+              <script>
+                function stressCpu() {
+                  document.getElementById('status').textContent = 'Starting CPU stress...';
+                  fetch('/cgi-bin/stress.sh')
+                    .then(r => r.text())
+                    .then(t => { document.getElementById('status').textContent = 'Stress running on $INSTANCE_ID - watch ASG in AWS console!'; })
+                    .catch(() => { document.getElementById('status').textContent = 'Error triggering stress'; });
+                }
+              </script>
             </body>
             </html>
             EOF
@@ -245,9 +333,8 @@ Resources:
             #!/bin/bash
             echo "Content-Type: text/plain"
             echo ""
-            echo "Starting CPU stress..."
             nohup stress-ng --cpu 8 --timeout 300s &>/dev/null &
-            echo "Stress running"
+            echo "Stress running on $(curl -s http://169.254.169.254/latest/meta-data/instance-id)"
             EOF
 
             chmod +x /var/www/cgi-bin/stress.sh
@@ -272,7 +359,7 @@ Resources:
     DependsOn: Listener
     Properties:
       MinSize: "1"
-      DesiredCapacity: "1"
+      DesiredCapacity: "2"
       MaxSize: "4"
       VPCZoneIdentifier:
         - !Ref PrivateSubnetA
@@ -284,24 +371,38 @@ Resources:
       LaunchTemplate:
         LaunchTemplateId: !Ref LaunchTemplate
         Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      Tags:
+        # PropagateAtLaunch: true pushes the Name tag to every EC2 instance the ASG launches
+        - Key: Name
+          Value: autoscaling-demo-instance
+          PropagateAtLaunch: true
 
   # =========================
-  # SCALING POLICY (REQUIRED 30%)
+  # SCALING POLICY
+  # Target tracking automatically handles both scale-out (CPU > 30%) and
+  # scale-in (CPU drops below threshold) without a separate scale-in policy.
+  # EstimatedInstanceWarmup gives new instances 60s to stabilise before
+  # their metrics influence the scaling decision.
   # =========================
   ScaleOutPolicy:
     Type: AWS::AutoScaling::ScalingPolicy
     Properties:
       AutoScalingGroupName: !Ref AutoScalingGroup
       PolicyType: TargetTrackingScaling
-      EstimatedInstanceWarmup: 60 
+      EstimatedInstanceWarmup: 60
       TargetTrackingConfiguration:
         PredefinedMetricSpecification:
           PredefinedMetricType: ASGAverageCPUUtilization
         TargetValue: 30
 
 # =========================
-# OUTPUT
+# OUTPUTS
 # =========================
 Outputs:
   ALBURL:
+    Description: Public URL of the Application Load Balancer
     Value: !Sub "http://${ALB.DNSName}"
+
+  ASGName:
+    Description: Auto Scaling Group name (use this to manually adjust desired capacity)
+    Value: !Ref AutoScalingGroup
