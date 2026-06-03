@@ -73,22 +73,19 @@ Resources:
         - Key: Name
           Value: autoscaling-demo-private-b
 
-  # =========================
-  # NAT GATEWAY (REGIONAL)
-  # =========================
-  NatEIP:
-    Type: AWS::EC2::EIP
-    Properties:
-      Domain: vpc
-
-  NatGateway:
+# =========================
+# NAT Gateway (Regional)
+# =========================
+  NAT:
     Type: AWS::EC2::NatGateway
+    DependsOn: IGWAttachment
     Properties:
-      SubnetId: !Ref PublicSubnetA
-      AllocationId: !GetAtt NatEIP.AllocationId
+      ConnectivityType: public
+      AvailabilityMode: regional
+      VpcId: !Ref VPC
       Tags:
         - Key: Name
-          Value: autoscaling-demo-nat
+          Value: Demo-Regional-NAT
 
   # =========================
   # ROUTING
@@ -131,11 +128,11 @@ Resources:
 
   PrivateRoute:
     Type: AWS::EC2::Route
-    DependsOn: NatGateway
+    DependsOn: NAT
     Properties:
       RouteTableId: !Ref PrivateRouteTable
       DestinationCidrBlock: 0.0.0.0/0
-      NatGatewayId: !Ref NatGateway
+      NatGatewayId: !Ref NAT
 
   PrivateSubnetAAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
@@ -269,107 +266,143 @@ Resources:
           HttpEndpoint: enabled
         UserData:
           Fn::Base64: |
-            #!/bin/bash
-            set -e
+            #!/bin/bash -xe
+  
+            # Update packages
+            yum update -y
+  
+            # Install Apache
+            yum install -y httpd
+  
+            # Install EPEL + stress tool
+            amazon-linux-extras install epel -y
+            yum install -y stress
+  
 
-            dnf install -y httpd stress-ng
+
+            # Start Apache
             systemctl enable httpd
             systemctl start httpd
-
-            # IMDSv2 - fetch a session token first, then use it for all metadata calls
-            TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
-              -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-            INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
-              http://169.254.169.254/latest/meta-data/instance-id)
-            AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
-              http://169.254.169.254/latest/meta-data/placement/availability-zone)
-            LOCAL_IP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
-              http://169.254.169.254/latest/meta-data/local-ipv4)
-            LAUNCH_TIME=$(date '+%Y-%m-%d %H:%M:%S UTC')
-
-            # Write HTML with literal placeholders, then substitute via sed.
-            # This is more reliable than heredoc variable expansion which runs
-            # the curl calls at write time before metadata is guaranteed available.
-            cat > /var/www/html/index.html <<'HTML'
+  
+            # -----------------------------
+            # IMDSv2 TOKEN
+            # -----------------------------
+            TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" \
+            -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+  
+            # Fetch metadata
+            AZ=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" \
+            http://169.254.169.254/latest/meta-data/placement/availability-zone)
+  
+            INSTANCEID=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" \
+            http://169.254.169.254/latest/meta-data/instance-id)
+  
+            PRIVATEIP=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" \
+            http://169.254.169.254/latest/meta-data/local-ipv4)
+  
+            # -----------------------------
+            # WEB PAGE
+            # -----------------------------
+            cat > /var/www/html/index.html << EOF
             <!DOCTYPE html>
             <html>
             <head>
-              <title>Auto Scaling Demo</title>
-              <meta http-equiv="refresh" content="5">
-              <style>
-                body { font-family: Arial, sans-serif; max-width: 600px; margin: 60px auto; text-align: center; background: #f4f4f4; }
-                .card { background: white; border-radius: 10px; padding: 30px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-                h1 { color: #232f3e; }
-                .badge { display: inline-block; background: #ff9900; color: white; padding: 4px 12px; border-radius: 20px; font-size: 13px; margin-bottom: 20px; }
-                table { width: 100%; border-collapse: collapse; margin: 20px 0; text-align: left; }
-                td { padding: 10px 14px; border-bottom: 1px solid #eee; }
-                td:first-child { color: #666; font-size: 13px; width: 40%; }
-                td:last-child { font-weight: bold; font-family: monospace; font-size: 14px; }
-                .stress-btn { background: #d9534f; color: white; border: none; padding: 12px 28px; border-radius: 6px; font-size: 15px; cursor: pointer; margin-top: 10px; }
-                .stress-btn:hover { background: #c9302c; }
-                .note { font-size: 12px; color: #999; margin-top: 16px; }
-                #status { margin-top: 12px; font-size: 13px; color: #28a745; height: 20px; }
-              </style>
+                <title>Auto Scaling Demo</title>
+                <style>
+                    body {
+                        font-family: Arial;
+                        margin: 40px;
+                        background: #f4f4f4;
+                    }
+                    .card {
+                        background: white;
+                        padding: 30px;
+                        border-radius: 10px;
+                        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                    }
+                    h1 {
+                        color: #232f3e;
+                    }
+                    .info {
+                        margin: 10px 0;
+                        font-size: 18px;
+                    }
+                    .btn {
+                        background: #ff9900;
+                        color: white;
+                        padding: 12px 20px;
+                        border: none;
+                        border-radius: 5px;
+                        cursor: pointer;
+                        font-size: 16px;
+                    }
+                </style>
             </head>
             <body>
-              <div class="card">
-                <div class="badge">Auto Scaling Demo</div>
-                <h1>&#9881; Instance Info</h1>
-                <table>
-                  <tr><td>Instance ID</td><td>INSTANCE_ID_PLACEHOLDER</td></tr>
-                  <tr><td>Availability Zone</td><td>AZ_PLACEHOLDER</td></tr>
-                  <tr><td>Private IP</td><td>LOCAL_IP_PLACEHOLDER</td></tr>
-                  <tr><td>Instance launched</td><td>LAUNCH_TIME_PLACEHOLDER</td></tr>
-                </table>
-                <button class="stress-btn" onclick="stressCpu()">&#128165; Stress CPU (5 min)</button>
-                <div id="status"></div>
-                <p class="note">Page auto-refreshes every 5 seconds. Each refresh may hit a different instance.<br>Reload repeatedly to observe load balancing across instances.</p>
-              </div>
-              <script>
-                function stressCpu() {
-                  document.getElementById('status').textContent = 'Starting CPU stress...';
-                  fetch('/cgi-bin/stress.sh')
-                    .then(r => r.text())
-                    .then(t => { document.getElementById('status').textContent = 'Stress running - watch ASG in AWS console!'; })
-                    .catch(() => { document.getElementById('status').textContent = 'Error triggering stress'; });
-                }
-              </script>
+                <div class="card">
+                    <h1>🚀 Auto Scaling Demo</h1>
+  
+                    <div class="info">
+                        <strong>Instance ID:</strong> $INSTANCEID
+                    </div>
+  
+                    <div class="info">
+                        <strong>Availability Zone:</strong> $AZ
+                    </div>
+  
+                    <div class="info">
+                        <strong>Private IP:</strong> $PRIVATEIP
+                    </div>
+  
+                    <br>
+  
+                    <button class="btn" onclick="fetch('/burn')">
+                        Start CPU Stress
+                    </button>
+  
+                    <p>
+                        Refresh page to observe load balancing across instances.
+                    </p>
+                </div>
             </body>
             </html>
-            HTML
-
-            # Substitute placeholders with real metadata values
-            sed -i "s|INSTANCE_ID_PLACEHOLDER|$INSTANCE_ID|g"   /var/www/html/index.html
-            sed -i "s|AZ_PLACEHOLDER|$AZ|g"                     /var/www/html/index.html
-            sed -i "s|LOCAL_IP_PLACEHOLDER|$LOCAL_IP|g"         /var/www/html/index.html
-            sed -i "s|LAUNCH_TIME_PLACEHOLDER|$LAUNCH_TIME|g"   /var/www/html/index.html
-
-            # CGI stress script - also uses IMDSv2 for instance ID in response
-            cat > /var/www/cgi-bin/stress.sh <<'EOF'
+            EOF
+  
+            # -----------------------------
+            # CPU STRESS CGI SCRIPT
+            # -----------------------------
+            mkdir -p /var/www/cgi-bin
+  
+            cat > /var/www/cgi-bin/burn.sh << 'EOF'
             #!/bin/bash
             echo "Content-Type: text/plain"
             echo ""
-            TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
-              -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-            INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
-              http://169.254.169.254/latest/meta-data/instance-id)
-            nohup stress-ng --cpu 8 --timeout 300s &>/dev/null &
-            echo "Stress running on $INSTANCE_ID"
+  
+            # Burn CPU for 60 seconds
+            stress --cpu 4 --timeout 60s &
+  
+            echo "CPU stress started"
             EOF
-
-            chmod +x /var/www/cgi-bin/stress.sh
-
-            cat > /etc/httpd/conf.d/cgi.conf <<EOF
-            ScriptAlias /cgi-bin/ "/var/www/cgi-bin/"
+  
+            chmod +x /var/www/cgi-bin/burn.sh
+  
+            # Enable CGI endpoint
+            cat > /etc/httpd/conf.d/burn.conf << 'EOF'
+            ScriptAlias /burn /var/www/cgi-bin/burn.sh
+  
             <Directory "/var/www/cgi-bin">
-              AllowOverride None
-              Options +ExecCGI
-              AddHandler cgi-script .sh
-              Require all granted
+                AllowOverride None
+                Options +ExecCGI
+                AddHandler cgi-script .sh
+                Require all granted
             </Directory>
             EOF
-
+  
+            # Restart Apache
             systemctl restart httpd
+  
+            echo "UserData setup complete"
+
 
   # =========================
   # AUTO SCALING GROUP
