@@ -1,19 +1,21 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Auto-scaling web tier with ALB, ASG, NAT Gateway, and multi-AZ VPC.
-  Instances display their instance ID so traffic distribution is visible.
+  Highly available Auto Scaling web tier with ALB, ASG, and Regional NAT Gateway.
+  Demonstrates CPU-based scaling and traffic distribution across instances.
 
+# =========================
 # PARAMETERS
+# =========================
 Parameters:
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
-    Description: Automatically resolves the latest Amazon Linux 2 AMI
 
-# VPC & NETWORKING
+# =========================
+# NETWORKING
+# =========================
 Resources:
 
-  # --- VPC ---
   VPC:
     Type: AWS::EC2::VPC
     Properties:
@@ -21,17 +23,16 @@ Resources:
       EnableDnsSupport: true
       EnableDnsHostnames: true
 
-  # --- Internet Gateway ---
-  IGW:
+  InternetGateway:
     Type: AWS::EC2::InternetGateway
 
   IGWAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
       VpcId: !Ref VPC
-      InternetGatewayId: !Ref IGW
+      InternetGatewayId: !Ref InternetGateway
 
-  # --- Public Subnets (ALB lives here) ---
+  # Public Subnets (ALB + NAT)
   PublicSubnetA:
     Type: AWS::EC2::Subnet
     Properties:
@@ -46,7 +47,7 @@ Resources:
       CidrBlock: 10.0.2.0/24
       AvailabilityZone: !Select [1, !GetAZs ""]
 
-  # --- Private Subnets (EC2 instances live here) ---
+  # Private Subnets (EC2)
   PrivateSubnetA:
     Type: AWS::EC2::Subnet
     Properties:
@@ -61,7 +62,9 @@ Resources:
       CidrBlock: 10.0.4.0/24
       AvailabilityZone: !Select [1, !GetAZs ""]
 
-  # --- NAT Gateway  ---
+  # =========================
+  # NAT GATEWAY (REGIONAL)
+  # =========================
   NatEIP:
     Type: AWS::EC2::EIP
     Properties:
@@ -73,7 +76,9 @@ Resources:
       SubnetId: !Ref PublicSubnetA
       AllocationId: !GetAtt NatEIP.AllocationId
 
-  # --- Route Tables ---
+  # =========================
+  # ROUTING
+  # =========================
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -85,24 +90,28 @@ Resources:
     Properties:
       RouteTableId: !Ref PublicRouteTable
       DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref IGW
+      GatewayId: !Ref InternetGateway
 
   PublicSubnetAAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: {SubnetId: !Ref PublicSubnetA, RouteTableId: !Ref PublicRouteTable}
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
 
   PublicSubnetBAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: {SubnetId: !Ref PublicSubnetB, RouteTableId: !Ref PublicRouteTable}
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
 
   PrivateRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref VPC
-      Tags: [{Key: Name, Value: private-rt}]
 
   PrivateRoute:
     Type: AWS::EC2::Route
+    DependsOn: NatGateway
     Properties:
       RouteTableId: !Ref PrivateRouteTable
       DestinationCidrBlock: 0.0.0.0/0
@@ -110,44 +119,47 @@ Resources:
 
   PrivateSubnetAAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: {SubnetId: !Ref PrivateSubnetA, RouteTableId: !Ref PrivateRouteTable}
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTable
 
   PrivateSubnetBAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: {SubnetId: !Ref PrivateSubnetB, RouteTableId: !Ref PrivateRouteTable}
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTable
 
-# SECURITY GROUPS
-
-  # ALB: allow HTTP from internet
+  # =========================
+  # SECURITY GROUPS
+  # =========================
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow HTTP from internet to ALB
       VpcId: !Ref VPC
+      GroupDescription: ALB SG
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
           CidrIp: 0.0.0.0/0
 
-  # EC2: allow HTTP only from ALB security group (no direct internet access)
   InstanceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow HTTP only from ALB
       VpcId: !Ref VPC
+      GroupDescription: EC2 SG (only ALB access)
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
           SourceSecurityGroupId: !Ref ALBSecurityGroup
 
-# APPLICATION LOAD BALANCER
-
+  # =========================
+  # LOAD BALANCER
+  # =========================
   ALB:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      Name: autoscale-alb
       Scheme: internet-facing
       Type: application
       Subnets:
@@ -159,14 +171,11 @@ Resources:
   TargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      Name: autoscale-tg
+      VpcId: !Ref VPC
       Port: 80
       Protocol: HTTP
-      VpcId: !Ref VPC
       TargetType: instance
       HealthCheckPath: /
-      HealthCheckIntervalSeconds: 15
-      HealthyThresholdCount: 2
 
   Listener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -178,8 +187,9 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref TargetGroup
 
-# IAM ROLE (lets instances call EC2 metadata API)
-
+  # =========================
+  # IAM ROLE
+  # =========================
   InstanceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -187,22 +197,23 @@ Resources:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Principal: {Service: ec2.amazonaws.com}
+            Principal:
+              Service: ec2.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore  # optional: SSM access for debugging
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
       Roles: [!Ref InstanceRole]
 
-# LAUNCH TEMPLATE
-
+  # =========================
+  # LAUNCH TEMPLATE
+  # =========================
   LaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
-      LaunchTemplateName: autoscale-lt
       LaunchTemplateData:
         ImageId: !Ref LatestAmiId
         InstanceType: t3.micro
@@ -210,128 +221,73 @@ Resources:
           Arn: !GetAtt InstanceProfile.Arn
         SecurityGroupIds:
           - !Ref InstanceSecurityGroup
-        # No KeyName = no SSH access (as required)
         UserData:
           Fn::Base64: |
             #!/bin/bash
-
-            # Update packages
             yum update -y
-
-            # Install Apache
-            yum install -y httpd
-
-            # Install EPEL + stress tool
-            amazon-linux-extras install epel -y
-            yum install -y stress
-
-
-
-            # Start Apache
+            yum install -y httpd stress-ng
             systemctl enable httpd
             systemctl start httpd
 
-            # Retrieve instance metadata
-            TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
-              -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-            INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
-              http://169.254.169.254/latest/meta-data/instance-id)
-            PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
-              http://169.254.169.254/latest/meta-data/local-ipv4)
-            AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
-              http://169.254.169.2 54/latest/meta-data/placement/availability-zone)
+            mkdir -p /var/www/cgi-bin
 
-            # Create a simple HTML page showing instance details
-            cat > /var/www/html/index.html <<HTMLEOF
-            <!DOCTYPE html>
+            cat > /var/www/html/index.html <<EOF
             <html>
-            <head>
-              <title>Auto Scaling Demo</title>
-              <style>
-                body { font-family: Arial, sans-serif; text-align: center; margin-top: 80px; background: #f4f4f4; }
-                .card { display: inline-block; padding: 40px; background: white;
-                        border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
-                h1 { color: #e67e22; }
-                p  { font-size: 1.2em; }
-                .id { font-weight: bold; color: #2c3e50; font-size: 1.4em; }
-                button { margin-top: 20px; padding: 12px 30px; font-size: 1em;
-                        background: #e67e22; color: white; border: none;
-                        border-radius: 6px; cursor: pointer; }
-                button:hover { background: #cf6d17; }
-                #result { margin-top: 15px; font-size: 0.95em; color: #555; }
-              </style>
-            </head>
-            <body>
-              <div class="card">
-                <h1>Auto Scaling Web Tier</h1>
-                <p>Instance ID: <span class="id">$INSTANCE_ID</span></p>
-                <p>Private IP : <span class="id">$PRIVATE_IP</span></p>
-                <p>AZ         : <span class="id">$AZ</span></p>
-                <button onclick="stress()">Stress CPU</button>
-                <div id="result"></div>
-              </div>
-              <script>
-                function stress() {
-                  document.getElementById('result').innerText = 'Stressing...';
-                  fetch('/cgi-bin/stress.sh')
-                    .then(r => r.text())
-                    .then(t => {
-                      document.getElementById('result').innerText = t;
-                      // Reload after 2s so the next click hits a potentially different instance
-                      setTimeout(() => location.reload(), 2000);
-                    })
-                    .catch(() => {
-                      document.getElementById('result').innerText = 'Done. Watch for new instances.';
-                      setTimeout(() => location.reload(), 2000);
-                    });
-                }
-              </script>
+            <body style="text-align:center;font-family:Arial">
+            <h1>Auto Scaling Demo</h1>
+            <p>Instance: $(curl -s http://169.254.169.254/latest/meta-data/instance-id)</p>
+            <button onclick="fetch('/cgi-bin/stress.sh')">Stress CPU</button>
             </body>
             </html>
-            HTMLEOF
+            EOF
 
-            # CPU stress endpoint - hitting /stress.sh triggers load for demo purposes
-            cat > /var/www/cgi-bin/stress.sh <<'STRESS'
+            cat > /var/www/cgi-bin/stress.sh <<'EOF'
             #!/bin/bash
             echo "Content-Type: text/plain"
             echo ""
-            echo "Stressing CPU for 60 seconds..."
-            nohup stress --cpu 4 --timeout 60 &>/dev/null &
-            echo "Done. Watch CloudWatch for CPU spike."
-            STRESS
+            echo "Starting CPU stress..."
+            nohup stress-ng --cpu 8 --timeout 300s &>/dev/null &
+            echo "Stress running"
+            EOF
+
             chmod +x /var/www/cgi-bin/stress.sh
 
-            # Enable CGI so the stress endpoint works
-            sed -i 's|#AddHandler cgi-script .cgi|AddHandler cgi-script .cgi .sh|' \
-              /etc/httpd/conf/httpd.conf
-            sed -i 's|Options None|Options +ExecCGI|' /etc/httpd/conf/httpd.conf
+            cat > /etc/httpd/conf.d/cgi.conf <<EOF
+            ScriptAlias /cgi-bin/ "/var/www/cgi-bin/"
+            <Directory "/var/www/cgi-bin">
+              AllowOverride None
+              Options +ExecCGI
+              AddHandler cgi-script .sh
+              Require all granted
+            </Directory>
+            EOF
+
             systemctl restart httpd
 
-
-# AUTO SCALING GROUP
+  # =========================
+  # AUTO SCALING GROUP
+  # =========================
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: Listener
     Properties:
-      AutoScalingGroupName: autoscale-asg
       MinSize: "1"
       DesiredCapacity: "1"
       MaxSize: "4"
-      LaunchTemplate:
-        LaunchTemplateId: !Ref LaunchTemplate
-        Version: !GetAtt LaunchTemplate.LatestVersionNumber
       VPCZoneIdentifier:
         - !Ref PrivateSubnetA
         - !Ref PrivateSubnetB
       TargetGroupARNs:
         - !Ref TargetGroup
       HealthCheckType: ELB
-      HealthCheckGracePeriod: 120
-      Tags:
-        - Key: Name
-          Value: autoscale-instance
-          PropagateAtLaunch: true
+      HealthCheckGracePeriod: 60
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
 
-  # Scale-out policy: add 1 instance when CPU > 30 %
+  # =========================
+  # SCALING POLICY (REQUIRED 30%)
+  # =========================
   ScaleOutPolicy:
     Type: AWS::AutoScaling::ScalingPolicy
     Properties:
@@ -341,11 +297,11 @@ Resources:
         PredefinedMetricSpecification:
           PredefinedMetricType: ASGAverageCPUUtilization
         TargetValue: 30
-        # Scale-in is enabled by default; set DisableScaleIn: true to disable it
+        EstimatedInstanceWarmup: 60
 
-# OUTPUTS
-
+# =========================
+# OUTPUT
+# =========================
 Outputs:
-  ALBDNSName:
-    Description: Public URL of the Application Load Balancer
+  ALBURL:
     Value: !Sub "http://${ALB.DNSName}"
